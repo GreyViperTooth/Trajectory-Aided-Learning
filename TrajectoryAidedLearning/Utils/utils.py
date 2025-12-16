@@ -33,12 +33,16 @@ def load_yaml_dict(fname):
 
 
 def init_file_struct(path):
+    """
+    Ensure a directory exists; if removal fails due to file locks, keep and reuse.
+    """
     if os.path.exists(path):
         try:
-            os.rmdir(path)
-        except:
             shutil.rmtree(path)
-    os.mkdir(path)
+        except Exception:
+            # On Windows/OneDrive locks, fall back to reusing the existing folder.
+            return
+    os.makedirs(path, exist_ok=True)
 
 @njit(cache=True)
 def limit_phi(phi):
@@ -47,14 +51,6 @@ def limit_phi(phi):
     while phi < -np.pi:
         phi = phi + 2*np.pi
     return phi
-
-def init_file_struct(path):
-    if os.path.exists(path):
-        try:
-            os.rmdir(path)
-        except:
-            shutil.rmtree(path)
-    os.mkdir(path)
 
 def init_reward_struct(path):
     if os.path.exists(path):

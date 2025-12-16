@@ -1,0 +1,2 @@
+% # columns="iteration, evaluation, sigma, void, void,  stds==sigma*sigma_vec.scaling*sqrt(diag(C))", seed=254280, Sun Dec  7 18:52:31 2025, <python>{}</python>
+1 8 0.11897641002236499 0 0 0.09999999999999999 0.049999999999999996 0.118364604209725 0.11976003544190764

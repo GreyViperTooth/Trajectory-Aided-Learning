@@ -1,4 +1,6 @@
 from os import stat
+import os
+import time
 import numpy as np 
 from matplotlib import pyplot as plt
 import random
@@ -227,10 +229,24 @@ class TD3(object):
     def save(self, directory="./saves"):
         filename = self.name
 
-        torch.save(self.actor, '%s/%s_actor.pth' % (directory, filename))
-        torch.save(self.critic, '%s/%s_critic.pth' % (directory, filename))
-        torch.save(self.actor_target, '%s/%s_actor_target.pth' % (directory, filename))
-        torch.save(self.critic_target, '%s/%s_critic_target.pth' % (directory, filename))
+        os.makedirs(directory, exist_ok=True)
+
+        def _safe_save(obj, path):
+            # retry saves in case the filesystem momentarily locks the file (e.g., sync clients)
+            last_err = None
+            for _ in range(3):
+                try:
+                    torch.save(obj, path, _use_new_zipfile_serialization=False)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    last_err = exc
+                    time.sleep(0.25)
+            raise last_err
+
+        _safe_save(self.actor, f"{directory}/{filename}_actor.pth")
+        _safe_save(self.critic, f"{directory}/{filename}_critic.pth")
+        _safe_save(self.actor_target, f"{directory}/{filename}_actor_target.pth")
+        _safe_save(self.critic_target, f"{directory}/{filename}_critic_target.pth")
 
     def load(self, directory="./saves"):
         filename = self.name

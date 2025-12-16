@@ -1,9 +1,10 @@
-import os, shutil
+import os, shutil, time
 import csv
 import numpy as np
 from matplotlib import pyplot as plt
 from TrajectoryAidedLearning.Utils.utils import *
 from matplotlib.ticker import MultipleLocator
+from pathlib import Path
 
 
 SIZE = 20000
@@ -79,6 +80,19 @@ class TrainHistory():
             # raise NotImplementedError
             plot_data(self.rewards[0:self.ptr], figure_n=2)
 
+    def _safe_savefig(self, path, fig_num):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        last_err = None
+        for _ in range(3):
+            try:
+                plt.figure(fig_num)
+                plt.savefig(path)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                time.sleep(0.25)
+        raise last_err
+
     def save_csv_data(self):
         data = []
         ptr = self.ptr  #exclude the last entry
@@ -87,8 +101,7 @@ class TrainHistory():
         save_csv_array(data, self.path + "/training_data_episodes.csv")
 
         plot_data(self.rewards[0:ptr], figure_n=2)
-        plt.figure(2)
-        plt.savefig(self.path + "/training_rewards_episodes.png")
+        self._safe_savefig(self.path + "/training_rewards_episodes.png", 2)
 
         t_steps = np.cumsum(self.lengths[0:ptr])/100
         plt.figure(3)
@@ -102,7 +115,7 @@ class TrainHistory():
 
         plt.tight_layout()
         plt.grid()
-        plt.savefig(self.path + "/training_rewards_steps.png")
+        self._safe_savefig(self.path + "/training_rewards_steps.png", 3)
 
         # plt.figure(4)
         # plt.clf()
@@ -124,8 +137,8 @@ class VehicleStateHistory:
     def __init__(self, run, folder):
         self.vehicle_name = run.run_name
         self.path = "Data/Vehicles/" + run.path + run.run_name + "/" + folder
-        if not os.path.exists(self.path):
-            os.mkdir(self.path)
+        # Ensure nested folders exist for falsification/test artifacts
+        os.makedirs(self.path, exist_ok=True)
         self.states = []
         self.actions = []
     
@@ -142,26 +155,19 @@ class VehicleStateHistory:
         actions = np.array(self.actions)
 
         lap_history = np.concatenate((states, actions), axis=1)
+        os.makedirs(self.path, exist_ok=True)
 
-        if test_map is None:
-            np.save(self.path + f"Lap_{lap_n}_history_{self.vehicle_name}.npy", lap_history)
-        else:
-            np.save(self.path + f"Lap_{lap_n}_history_{self.vehicle_name}_{test_map}.npy", lap_history)
+        base_name = f"Lap_{lap_n}_history_{self.vehicle_name}"
+        if test_map is not None:
+            base_name += f"_{test_map}"
+        candidate = Path(self.path) / f"{base_name}.npy"
+        # Windows path limits are on absolute paths; fall back to shorter name if too long
+        abs_len = len(str(candidate.resolve()))
+        if abs_len > 240:
+            short_name = f"Lap_{lap_n}.npy" if test_map is None else f"Lap_{lap_n}_{test_map}.npy"
+            candidate = Path(self.path) / short_name
 
-        self.states = []
-        self.actions = []
-    
-    def save_history(self, lap_n=0, test_map=None):
-        states = np.array(self.states)
-        self.actions.append(np.array([0, 0])) # last action to equal lengths
-        actions = np.array(self.actions)
-
-        lap_history = np.concatenate((states, actions), axis=1)
-
-        if test_map is None:
-            np.save(self.path + f"Lap_{lap_n}_history_{self.vehicle_name}.npy", lap_history)
-        else:
-            np.save(self.path + f"Lap_{lap_n}_history_{self.vehicle_name}_{test_map}.npy", lap_history)
+        np.save(candidate, lap_history)
 
         self.states = []
         self.actions = []

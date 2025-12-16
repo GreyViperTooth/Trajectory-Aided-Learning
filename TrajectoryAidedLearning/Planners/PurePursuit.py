@@ -336,6 +336,11 @@ class PurePursuit:
             
         speed = min(speed, self.max_speed) # cap the speed
 
+        # Demo-only reckless mode: small steering jitter to make PP look less stable.
+        if getattr(self.run, "demo_reckless", False):
+            jitter = np.random.uniform(-0.08, 0.08)
+            steering_angle = np.clip(steering_angle + jitter, -self.max_steer, self.max_steer)
+
         action = np.array([steering_angle, speed])
 
         return action

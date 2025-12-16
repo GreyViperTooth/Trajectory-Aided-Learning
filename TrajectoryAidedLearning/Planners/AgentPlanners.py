@@ -1,3 +1,4 @@
+import os
 import numpy as np 
 from TrajectoryAidedLearning.Utils.TD3 import TD3
 from TrajectoryAidedLearning.Utils.HistoryStructs import TrainHistory
@@ -63,9 +64,14 @@ class FastArchitecture:
 class AgentTrainer: 
     def __init__(self, run, conf):
         self.run, self.conf = run, conf
-        self.name = run.run_name
-        self.path = conf.vehicle_path + run.path + run.run_name 
-        init_file_struct(self.path)
+        # Allow a single shared policy across maps if conf.shared_actor_name is provided
+        self.shared_actor = getattr(conf, "shared_actor_name", None)
+        self.name = self.shared_actor if self.shared_actor else run.run_name
+        self.path = conf.vehicle_path + run.path + self.name
+        if self.shared_actor:
+            os.makedirs(self.path, exist_ok=True)
+        else:
+            init_file_struct(self.path)
 
         self.v_min_plan =  conf.v_min_plan
 
@@ -78,6 +84,15 @@ class AgentTrainer:
 
         self.agent = TD3(self.architecture.state_space, self.architecture.action_space, 1, run.run_name)
         self.agent.create_agent(conf.h_size)
+        # If we are sharing an actor across maps, reload it if it already exists to continue training
+        if self.shared_actor:
+            actor_path = os.path.join(self.path, f"{self.name}_actor.pth")
+            if os.path.exists(actor_path):
+                try:
+                    self.agent.try_load(load=True, path=self.path)
+                    print(f"Loaded shared actor from {actor_path}")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Warning: could not load shared actor ({exc}); starting fresh.")
 
         self.t_his = TrainHistory(run, conf)
 
@@ -169,13 +184,16 @@ class AgentTester:
         """
         self.run, self.conf = run, conf
         self.v_min_plan = conf.v_min_plan
-        self.path = conf.vehicle_path + run.path + run.run_name 
+        self.shared_actor = getattr(conf, "shared_actor_name", None)
+        self.name = self.shared_actor if self.shared_actor else run.run_name
+        self.path = conf.vehicle_path + run.path + self.name 
 
-        self.actor = torch.load(self.path + '/' + run.run_name + "_actor.pth")
+        # PyTorch 2.6+ defaults weights_only=True; the saved checkpoint needs full class info.
+        self.actor = torch.load(self.path + '/' + self.name + "_actor.pth", weights_only=False)
 
         self.architecture = FastArchitecture(run, conf)
 
-        print(f"Agent loaded: {run.run_name}")
+        print(f"Agent loaded: {self.name}")
 
     def plan(self, obs):
         nn_obs = self.architecture.transform_obs(obs)

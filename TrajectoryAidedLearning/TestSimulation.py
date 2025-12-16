@@ -10,6 +10,7 @@ from TrajectoryAidedLearning.Planners.AgentPlanners import AgentTester
 import torch
 import numpy as np
 import time
+from pathlib import Path
 
 # settings
 SHOW_TRAIN = False
@@ -37,6 +38,18 @@ class TestSimulation():
         self.map_name = None
         self.reward = None
         self.noise_rng = None
+        self.vehicle_radius = 0.30  # approximate footprint radius for safety margin
+
+        # falsification / perturbation hooks (defaults are no-op)
+        self.noise_std = 0.0
+        self.scan_noise_std = 0.0
+        self.scan_dropout_prob = 0.0
+        self.lidar_rng = None
+        self.pose_jitter = None
+        self.lidar_mitigation = False
+        self.lidar_floor = 0.30
+        self.safety_times = []
+        self.safety_margins = []
 
         # flags 
         self.vehicle_state_history = None
@@ -71,16 +84,18 @@ class TestSimulation():
             self.vehicle_state_history = VehicleStateHistory(run, "Testing/")
 
             self.n_test_laps = run.n_test_laps
-            self.lap_times = []
-            self.completed_laps = 0
+        self.lap_times = []
+        self.completed_laps = 0
+        self.safety_times = []
+        self.safety_margins = []
 
-            eval_dict = self.run_testing()
-            run_dict = vars(run)
-            run_dict.update(eval_dict)
+        eval_dict = self.run_testing()
+        run_dict = vars(run)
+        run_dict.update(eval_dict)
 
-            save_conf_dict(run_dict)
+        save_conf_dict(run_dict)
 
-            self.env.close_rendering()
+        self.env.close_rendering()
 
     def run_testing(self):
         assert self.env != None, "No environment created"
@@ -88,6 +103,9 @@ class TestSimulation():
 
         for i in range(self.n_test_laps):
             observation = self.reset_simulation()
+            if self.safety_times is None:
+                self.safety_times = []
+                self.safety_margins = []
 
             while not observation['colision_done'] and not observation['lap_done']:
                 action = self.planner.plan(observation)
@@ -121,6 +139,9 @@ class TestSimulation():
         eval_dict['success_rate'] = float(success_rate)
         eval_dict['avg_times'] = float(avg_times)
         eval_dict['std_dev'] = float(std_dev)
+        eval_dict['completed_laps'] = int(self.completed_laps)
+        eval_dict['n_test_laps'] = int(self.n_test_laps)
+        eval_dict['min_safety_margin'] = float(min(self.safety_margins)) if len(self.safety_margins) > 0 else 0.0
 
         return eval_dict
 
@@ -156,7 +177,28 @@ class TestSimulation():
         """
         observation = {}
         observation['current_laptime'] = obs['lap_times'][0]
-        observation['scan'] = obs['scans'][0] #TODO: introduce slicing here
+        scan = obs['scans'][0]
+
+        # optional lidar perturbations (noise/dropout) for falsification
+        if (self.scan_noise_std > 0 or self.scan_dropout_prob > 0) and self.lidar_rng is None:
+            # tie the lidar rng to the main noise rng if available for reproducibility
+            self.lidar_rng = self.noise_rng if self.noise_rng is not None else np.random.default_rng()
+        if self.scan_dropout_prob > 0 and self.lidar_rng is not None:
+            mask = self.lidar_rng.random(scan.shape) < self.scan_dropout_prob
+            scan = np.where(mask, 0.0, scan)
+        if self.scan_noise_std > 0 and self.lidar_rng is not None:
+            scan = scan + self.lidar_rng.normal(scale=self.scan_noise_std, size=scan.shape)
+            scan = np.clip(scan, 0.0, None)
+        # simple mitigation for dropout: fill zeros with median and floor to avoid spurious zeros
+        if self.lidar_mitigation:
+            if np.any(scan <= 1e-6):
+                nz = scan[scan > 1e-6]
+                fill = np.median(nz) if nz.size > 0 else 0.0
+                scan = np.where(scan <= 1e-6, fill, scan)
+            if self.lidar_floor is not None:
+                scan = np.clip(scan, self.lidar_floor, None)
+
+        observation['scan'] = scan #TODO: introduce slicing here
         
         if self.noise_rng:
             noise = self.noise_rng.normal(scale=self.noise_std, size=2)
@@ -173,6 +215,15 @@ class TestSimulation():
         observation['colision_done'] = False
 
         observation['reward'] = 0.0
+        # safety margin proxy: closest obstacle distance minus vehicle radius
+        safety_margin = float(np.min(scan) - self.vehicle_radius)
+        observation['safety_margin'] = safety_margin
+        if self.safety_times is not None and self.safety_margins is not None:
+            # use simulated time as time axis for monitoring; each plan step advances sim_steps * timestep
+            current_time = len(self.safety_times) * (self.env.timestep * self.conf.sim_steps)
+            self.safety_times.append(current_time)
+            self.safety_margins.append(safety_margin)
+
         if done and obs['lap_counts'][0] == 0: 
             observation['colision_done'] = True
         if self.std_track is not None:
@@ -198,13 +249,19 @@ class TestSimulation():
         return observation
 
     def reset_simulation(self):
-        reset_pose = np.zeros(3)[None, :]
+        reset_pose = np.zeros(3)
+        if self.pose_jitter is not None:
+            dx, dy, dyaw = self.pose_jitter
+            reset_pose = reset_pose + np.array([dx, dy, dyaw])
+        reset_pose = reset_pose[None, :]
 
         obs, step_reward, done, _ = self.env.reset(reset_pose)
 
         if SHOW_TRAIN: self.env.render('human_fast')
 
         self.prev_obs = None
+        self.safety_times = []
+        self.safety_margins = []
         observation = self.build_observation(obs, done)
         # self.prev_obs = observation
         if self.std_track is not None:
